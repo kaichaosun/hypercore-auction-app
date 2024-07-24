@@ -183,7 +183,7 @@ async function bidAuction(peer, name, price) {
         return false
     }
     // only allow higher price bid
-    if (price <= lastAction.price) {
+    if (Number(price) <= Number(lastAction.price)) {
         console.log(`[error] Not allowing lower price bid ${price} for ${name} by ${peer}, should be higher than ${lastAction.price}`)
         return false
     }

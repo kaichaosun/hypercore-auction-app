@@ -30,6 +30,7 @@ In each terminal, input `help` or any characters for available commands. For exa
 ## Features
 
 Use Corestore for managing many Hypercores, each auction has its own Hypercore.
+
 Use a static topic for Hyperswarm to connect peers interested in the auction app.
 
 Workflows,
@@ -45,4 +46,4 @@ Workflows,
 Known issues:
 - Terminal close with ctrl+c not working properly
 - Later joined or offline peers not able to sync the actions of the auction
-
+- Corestore is cleaned up when restart the app for users
