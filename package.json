@@ -1,9 +1,9 @@
 {
-  "name": "hypercore-chat-app",
+  "name": "hypercore-auction-app",
   "main": "index.js",
   "type": "module",
   "pear": {
-    "name": "hypercore-chat-app",
+    "name": "hypercore-auction-app",
     "type": "terminal"
   },
   "license": "Apache-2.0",
