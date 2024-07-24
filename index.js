@@ -1,7 +1,3 @@
-const { versions } = Pear
-console.log('Pear terminal application running')
-console.log(await versions())
-
 // Your task is to create a simplified peer-to-peer (P2P) auction solution based on Hyperswarm RPC and Hypercores.
 
 // With the RPC Client, you should be able to open auctions (e.g. selling a picture for 50 USDt). Upon opening the auction, a client should notify other parties in the ecosystem about the opened auction. This means that every client should have a small RPC Server. Other parties can bid on an auction by submitting an offer. Each bid should be propagated to all parties in the ecosystem. Upon completion of an auction, the distributed transaction should be propagated to all nodes as well.
@@ -28,13 +24,12 @@ console.log(await versions())
 
 
 /* global Pear */
-import Hyperswarm from 'hyperswarm'   // Module for P2P networking and connecting peers
-import b4a from 'b4a'                 // Module for buffer-to-string and vice-versa conversions 
-import crypto from 'hypercore-crypto' // Cryptographic functions for generating the key in app
-import readline from 'bare-readline'  // Module for reading user input in terminal
-import tty from 'bare-tty'            // Module to control terminal behavior
-import Hypercore from 'hypercore'
+import b4a from 'b4a'; // Module for buffer-to-string and vice-versa conversions 
+import fs from 'bare-fs'
+import readline from 'bare-readline'; // Module for reading user input in terminal
+import tty from 'bare-tty'; // Module to control terminal behavior
 import Corestore from 'corestore'
+import Hyperswarm from 'hyperswarm'; // Module for P2P networking and connecting peers
 
 
 const { teardown, config } = Pear    // Import configuration options and cleanup functions from Pear
@@ -42,8 +37,12 @@ const username = config.args.pop()   // Retrieve the username from command-line 
 const swarm = new Hyperswarm()
 
 const localPeer = b4a.toString(swarm.keyPair.publicKey, 'hex')
+console.log(`[info] Local peer pubkey: ${localPeer}`)
 const appName = "hypercore-auction-demo-app"
 const corestoreLocation = `./auctions/${username}`
+fs.rmSync(corestoreLocation, { recursive: true, force: true });
+const store = new Corestore(corestoreLocation)
+let peersCount = 0
 
 // Unannounce the public key before exiting the process
 // (This is not a requirement, but it helps avoid DHT pollution)
@@ -64,7 +63,10 @@ swarm.on('connection', peer => {
 
 // When there's updates to the swarm, update the peers count
 swarm.on('update', () => {
-    console.log(`[info] Number of connections is now ${swarm.connections.size}`)
+    if (peersCount != swarm.connections.size) {
+        peersCount = swarm.connections.size
+        console.log(`[info] Number of connections is now ${swarm.connections.size}`)
+    }
 })
 
 await joinAuctionPlatform()
@@ -83,34 +85,38 @@ async function joinAuctionPlatform() {
     console.log(`[info] Joined the global auction platform: ${topic}`)
 }
 
-function processAction(action) {
+async function processAction(action) {
     let arr = action.trim().split(/\s+/)
     if (arr.length < 3) {
         console.log(`[error] Invalid action: ${action}, input like 'open pic1 50', 'bid pic1 60', 'close pic1 80'`)
         return
     }
+
+    let actionResult = false
     switch (arr[0]) {
         case 'open':
-            openAuction(localPeer, arr[1], arr[2])
+            actionResult = await openAuction(localPeer, arr[1], arr[2])
             break
         case 'bid':
-            bidAuction(localPeer, arr[1], arr[2])
+            actionResult = await bidAuction(localPeer, arr[1], arr[2])
             break
         case 'close':
-            closeAuction(localPeer, arr[1], arr[2])
+            actionResult = await closeAuction(localPeer, arr[1], arr[2])
             break
         default:
             console.log(`[error] Invalid action: ${action}`)
             return
     }
 
-    const msg = {
-        type: arr[0],
-        name: arr[1],
-        price: arr[2],
+    if (actionResult) {
+        const msg = {
+            type: arr[0],
+            name: arr[1],
+            price: arr[2],
+        }
+        const peers = [...swarm.connections]
+        for (const peer of peers) peer.write(JSON.stringify(msg))
     }
-    const peers = [...swarm.connections]
-    for (const peer of peers) peer.write(JSON.stringify(msg))
 }
 
 async function processMessage(peer, rawMessage) {
@@ -131,86 +137,92 @@ async function processMessage(peer, rawMessage) {
     }
 
     if (msg.type === 'close') {
-        closeAuction(peer, msg.name)
+        closeAuction(peer, msg.name, msg.price)
     }
 }
 
 async function openAuction(peer, name, price) {
     console.log(`[info] Auction opened by ${peer} for ${name} at ${price}`)
-    const store = new Corestore(corestoreLocation)
-    const core = store.get({ name })
+    const session = store.session()
+    const core = session.get({ name })
     await core.ready()
-    console.log("core length", core.length)
 
     let owner = peer
 
     // only the new owner can reopen the existing auction
     if (core.length != 0) {
-        const lastAction = JSON.parse(core.get(core.length - 1).toString())
+        const block = await core.get(core.length - 1)
+        const lastAction = JSON.parse(block.toString())
         if (lastAction.type != 'close' || lastAction.owner != peer) {
             console.log(`[error] Auction ${name} can not be reopend by ${peer}`)
-            return
+            return false
         }
         owner = lastAction.owner
     }
 
-    updateCore('open', name, owner, peer, price, core)
+    await updateCore('open', name, owner, peer, price, core)
+    await session.close()
+    return true
 }
 
 async function bidAuction(peer, name, price) {
     console.log(`[info] Bid made by ${peer} for ${name} at ${price}`)
-    const store = new Corestore(corestoreLocation)
-    const core = store.get({ name })
+    const session = store.session()
+    const core = session.get({ name })
     await core.ready()
-    console.log("core length", core.length)
 
     if (core.length == 0) {
         console.log(`[error] Auction ${name} not found`)
-        return
+        return false
     }
 
-    const lastAction = JSON.parse(core.get(core.length - 1).toString())
+    const block = await core.get(core.length - 1)
+    const lastAction = JSON.parse(block.toString())
     if (lastAction.type == 'close') {
         console.log(`[error] Closed auction ${name} can not be bid anymore`)
-        return
+        return false
     }
     // only allow higher price bid
     if (price <= lastAction.price) {
-        console.log(`[error] Not allowing lower price bid ${price} for ${name} by ${peer}`)
-        return
+        console.log(`[error] Not allowing lower price bid ${price} for ${name} by ${peer}, should be higher than ${lastAction.price}`)
+        return false
     }
 
-    updateCore('bid', name, lastAction.owner, peer, price, core)
+    await updateCore('bid', name, lastAction.owner, peer, price, core)
+    await session.close()
+    return true
 }
 
 async function closeAuction(peer, name, price) {
-    console.log(`[info] Auction closed by ${peer} for ${name}`)
-    const store = new Corestore(corestoreLocation)
-    const core = store.get({ name: name })
+    console.log(`[info] Auction closed by ${peer} for ${name} at ${price}`)
+    const session = store.session()
+    const core = session.get({ name: name })
     await core.ready()
-    console.log("core length", core.length)
 
     if (core.length == 0) {
         console.log(`[error] Auction ${name} not found`)
-        return
+        return false
     }
 
-    const lastAction = JSON.parse(core.get(core.length - 1).toString())
+    const block = await core.get(core.length - 1)
+    const lastAction = JSON.parse(block.toString())
 
     // only the owner can close the auction
     if (lastAction.owner != peer) {
-        console.log(`[error] Auction ${name} can not be closed by ${peer}`)
-        return
+        console.log(`[error] Auction ${name} can not be closed by ${peer}, because actor is not the owner`)
+        return false
     }
     if (lastAction.price != price) {
-        console.log(`[error] Auction ${name} can not be closed with different price ${price} by ${peer}`)
-        return
+        console.log(`[error] Auction ${name} can not be closed with different price ${price} by ${peer}, the price should be ${lastAction.price}`)
+        return false
     }
 
-    updateCore('close', name, lastAction.actor, peer, price, core)
+    await updateCore('close', name, lastAction.actor, peer, price, core)
+    await session.close()
+    return true
 }
 
-function updateCore(type, name, owner, actor, price, core) {
+async function updateCore(type, name, owner, actor, price, core) {
     const auction = {
         type,
         name,
@@ -219,6 +231,6 @@ function updateCore(type, name, owner, actor, price, core) {
         price,
         time: Date.now()
     }
-    core.append(Buffer.from(JSON.stringify(auction)))
-    console.log('Updated local core for auction:', name)
+    await core.append(Buffer.from(JSON.stringify(auction)))
+    console.log(`[info] Updated core length: ${core.length} for auction: ${name}`)
 }
